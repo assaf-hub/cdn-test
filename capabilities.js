@@ -171,19 +171,58 @@
       "than demonstrating it.");
 
   /* ---------- 7. Host application globals ---------- */
-  var interesting = tryFn(function () {
-    return Object.keys(window).filter(function (k) {
-      return /(boot_data|initial_state|__INITIAL|__REDUX|__NEXT|__NUXT|webpackChunk|__webpack|store|config|token|session|auth|user|team|workspace|TS)/i.test(k);
+  /* A regex over Object.keys(window) is useless here - it matches standard DOM
+     names ("customElements" ends in "ts", "oncontextrestored" contains "store")
+     and a write-up full of false positives is worse than no row at all.
+     Instead, diff this realm's globals against a pristine one taken from a
+     blank same-origin iframe. What survives the diff is genuinely injected by
+     the host application. */
+  var injected = tryFn(function () {
+    var f = document.createElement("iframe");
+    f.style.display = "none";
+    f.src = "about:blank";
+    document.body.appendChild(f);
+    var baseline = Object.create(null);
+    Object.keys(f.contentWindow).forEach(function (k) { baseline[k] = 1; });
+    f.remove();
+    if (Object.keys(baseline).length < 50) return null;   /* baseline unusable */
+    return Object.keys(window).filter(function (k) { return !(k in baseline); });
+  }, null);
+
+  if (injected === null || typeof injected === "string") {
+    add("globals", "app-injected globals", "could not establish a baseline realm", "info",
+        "The blank-iframe baseline failed, so a diff would be unreliable. Reporting nothing " +
+        "rather than reporting regex noise.");
+  } else {
+    /* Of the genuinely injected names, flag the ones whose names suggest state
+       worth reading by hand. Anchored, case-sensitive where it matters. */
+    var hot = injected.filter(function (k) {
+      return /^(TS|boot_data)$/.test(k) ||
+             /^__(INITIAL|NEXT|NUXT|REDUX|APOLLO|webpack)/.test(k) ||
+             /^webpackChunk/.test(k) ||
+             /(^|_)(token|session|auth|user|team|workspace|store|config|state)(_|$)/i.test(k);
     });
-  }, []);
-  add("globals", "app-internal globals matched",
-      interesting.length ? interesting.length + " matched" : "none",
-      interesting.length ? "high" : "none",
-      interesting.length
-        ? interesting.slice(0, 25).map(function (k) { return k + " = " + shape(window[k]); }).join("\n") +
-          "\n\nNames and shapes only. A bootstrapped config or store object on window is usually where " +
-          "a surface's tokens and workspace identifiers actually live - worth enumerating by hand."
-        : null);
+
+    add("globals", "app-injected globals",
+        injected.length ? injected.length + " injected into this realm" : "none - realm matches a blank baseline",
+        injected.length ? "med" : "none",
+        injected.length
+          ? injected.slice(0, 30).map(function (k) { return k + " = " + shape(window[k]); }).join("\n") +
+            (injected.length > 30 ? "\n…and " + (injected.length - 30) + " more" : "") +
+            "\n\nNames and shapes only, diffed against a blank about:blank realm so these are " +
+            "genuinely application-injected rather than standard DOM."
+          : "This realm's global namespace is indistinguishable from a blank document.");
+
+    if (hot.length) {
+      add("globals", "injected globals holding likely app state",
+          hot.length + " of interest: " + names(hot),
+          "high",
+          hot.map(function (k) { return k + " = " + shape(window[k]); }).join("\n") +
+          "\n\nA bootstrapped config or store object on window is usually where a surface's tokens " +
+          "and workspace identifiers actually live. Shapes only - enumerate these by hand to see " +
+          "what is genuinely reachable before claiming it in a report.");
+    }
+  }
 
   /* ---------- 8. Same-origin request capability ---------- */
   var jobs = [];
